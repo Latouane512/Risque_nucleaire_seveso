@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="fr">
+
+<head>
+    <title>Carte des Risques Nucléaires et Seveso</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster/dist/MarkerCluster.Default.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster/dist/MarkerCluster.css" />
+
+    <style>
+        body { margin: 0; padding: 0; font-family: 'Helvetica Neue', Arial, sans-serif; }
+        #map { height: 100vh; width: 100%; }
+        
+        /* Titre Centré */
+        #map-title {
+            position: absolute;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 1000;
+            background: rgba(255, 255, 255, 0.95);
+            padding: 10px 20px;
+            border-radius: 50px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+            text-align: center;
+            border: 1px solid #ddd;
+        }
+        #map-title h1 { margin: 0; font-size: 18px; color: #E31A1C; text-transform: uppercase; letter-spacing: 1px; }
+        #map-title p { margin: 2px 0 0 0; font-size: 12px; color: #7f8c8d; }
+
+        /* Panneau Info */
+        .info {
+            padding: 12px;
+            font: 13px/16px 'Helvetica Neue', Arial, sans-serif;
+            background: rgba(255,255,255,0.96);
+            box-shadow: 0 0 15px rgba(0,0,0,0.2);
+            border-radius: 5px;
+            min-width: 260px;
+        }
+        .info h4 { margin: 0 0 8px; color: #333; font-size: 16px; border-bottom: 2px solid #E31A1C; padding-bottom: 5px; text-transform: uppercase; }
+        .info strong { color: #E31A1C; }
+
+        /* Légende */
+        .legend { 
+            font-family: 'Helvetica Neue', Arial, sans-serif;
+            line-height: 22px; 
+            color: #333; 
+            background: rgba(255, 255, 255, 0.95); 
+            padding: 15px; 
+            box-shadow: 0 0 15px rgba(0,0,0,0.2); 
+            border-radius: 8px; 
+            font-size: 1.1em; 
+        }
+        .legend h4 {
+            margin-top: 0;
+            margin-bottom: 10px;
+            font-size: 1.3em;
+            color: #E31A1C; 
+        }
+        .legend div {
+            margin-bottom: 8px; 
+            display: flex;
+            align-items: center;
+        }
+        .legend img {
+            width: 35px; 
+            height: 35px;
+            vertical-align: middle;
+            margin-right: 10px;
+            flex-shrink: 0;
+        }
+        .legend img.nuclear-legend-icon {
+            width: 25px; 
+            height: 25px;
+        }
+        .legend .cluster-box {
+            width: 25px; 
+            height: 25px;
+            border-radius: 50%;
+            margin-right: 10px;
+            flex-shrink: 0;
+            border: 1px solid #777;
+        }
+        .legend .buffer-box {
+            width: 25px; 
+            height: 25px; 
+            background-color: rgba(255, 0, 0, 0.3); /* Légère opacité pour la fusion */
+            border: 2px solid red; 
+            margin-right: 10px; 
+            flex-shrink: 0;
+        }
+
+        /* Amélioration du Layer Control */
+        .leaflet-control-layers { 
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2); 
+            border-radius: 8px; 
+            font-family: 'Helvetica Neue', Arial, sans-serif;
+            font-weight: bold;
+        }
+
+        /* Styles des clusters (Regroupements) */
+        .marker-cluster-nuclear div {
+            background-color: rgba(255, 215, 0, 0.8); 
+            border: 1px solid rgba(255, 215, 0, 1);
+        }
+        .marker-cluster-seveso div {
+            background-color: rgba(138, 43, 226, 0.8); 
+            border: 1px solid rgba(138, 43, 226, 1);
+        }
+
+    </style>
+</head>
+<body>
+
+<div id="map-title">
+    <h1>Carte des Risques Nucléaires et Seveso</h1>
+    <p>Sites Sensibles Majeurs en France</p>
+</div>
+
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+<script src="https://unpkg.com/leaflet.markercluster/dist/leaflet.markercluster.js"></script>
+<script src='https://unpkg.com/@turf/turf@6/turf.min.js'></script> 
+
+<script>
+    // --- 1. CONFIGURATION DE LA CARTE ---
+    var basemapGris = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+        attribution: '&copy; OpenStreetMap contributors &copy; CARTO'
+    });
+    
+    var basemapOsm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '© OpenStreetMap contributors'
+    });
+
+    var map = L.map('map', {
+        center: [46.6, 2.5],
+        zoom: 6,
+        layers: [basemapGris] 
+    });
+
+    // Contrôle d'échelle
+    L.control.scale({ position: 'bottomleft', metric: true, imperial: false }).addTo(map);
+
+    /* ---------------------------------------------------- */
+    /* 2. CONSTANTES & ICÔNES */
+    /* ---------------------------------------------------- */
+    const NUCLEAR_BUFFER_KM = 20; // 20 km (utilisé par Turf)
+    const MIN_ZOOM_FOR_BUFFER = 8; // Zoom minimum pour afficher les buffers
+
+    // Icône Nucléaire 
+    var nuclearIcon = L.icon({
+        iconUrl: 'NUCLEAIRE.png', 
+        iconSize: [32, 32],    
+        iconAnchor: [16, 32],  
+        popupAnchor: [0, -32]  
+    });
+
+    // Icônes Seveso 
+    var sevesoBasIcon = L.icon({
+        iconUrl: 'SENESO_SWG_BAS-removebg-preview.png',
+        iconSize: [45, 45],    
+        iconAnchor: [22, 45],  
+        popupAnchor: [0, -45]  
+    });
+
+    var sevesoHautIcon = L.icon({
+        iconUrl: 'SENESO_SWG_HAUT-removebg-preview.png',
+        iconSize: [50, 50],
+        iconAnchor: [25, 50],  
+        popupAnchor: [0, -50]
+    });
+
+    /* ---------------------------------------------------- */
+    /* 3. INFO PANEL (Haut Gauche) */
+    /* ---------------------------------------------------- */
+    var info = L.control({ position: 'topleft' });
+    info.onAdd = function (map) { this._div = L.DomUtil.create('div', 'info'); this.update(); return this._div; };
+    info.update = function (props, type) {
+        var html = '';
+        if (props) {
+            if (type === 'nuclear') {
+                html = '<h4>Site Nucléaire</h4>' +
+                    '<strong>Centrale:</strong> ' + props.centrale + '<br>' +
+                    '<strong>Combustible:</strong> ' + props.fuel + '<br>' +
+                    '<strong>Région:</strong> ' + props.region + '<br>' +
+                    '<strong>Commune:</strong> ' + props.commune;
+            } else if (type === 'seveso') {
+                html = '<h4>Site Seveso</h4>' +
+                    '<strong>Établissement:</strong> ' + (props.nom_ets || 'Non spécifié') + '<br>' +
+                    '<strong>Seuil:</strong> ' + (props.lib_seveso || 'Non spécifié') + '<br>' +
+                    '<strong>Commune:</strong> ' + props.nomcommune;
+            }
+        } else {
+            html = '<h4>Informations du Site</h4>Survolez un marqueur pour les détails.';
+        }
+        this._div.innerHTML = html;
+    };
+    info.addTo(map);
+
+    /* ---------------------------------------------------- */
+    /* 4. CHARGEMENT ET LOGIQUE D'AFFICHAGE */
+    /* ---------------------------------------------------- */
+
+    function highlightFeature(e, type) {
+        var layer = e.target;
+        info.update(layer.feature.properties, type);
+    }
+    
+    function resetHighlight(e) { 
+        info.update(); 
+    }
+
+    function zoomToFeature(e) { map.setView(e.target.getLatLng(), 12); } 
+
+    function onEachNuclearFeature(feature, layer) { 
+        layer.on({ mouseover: function(e) { highlightFeature(e, 'nuclear'); }, mouseout: resetHighlight, click: zoomToFeature }); 
+    }
+    function onEachSevesoFeature(feature, layer) { 
+        layer.on({ mouseover: function(e) { highlightFeature(e, 'seveso'); }, mouseout: resetHighlight, click: zoomToFeature }); 
+    }
+
+    // --- Groupes de marqueurs (Clustering) ---
+    var nuclearMarkers = L.markerClusterGroup({
+        iconCreateFunction: function(cluster) {
+            return L.divIcon({
+                html: '<div><span>' + cluster.getChildCount() + '</span></div>',
+                className: 'marker-cluster marker-cluster-nuclear ' + (
+                    cluster.getChildCount() < 10 ? 'marker-cluster-small' :
+                    cluster.getChildCount() < 100 ? 'marker-cluster-medium' : 'marker-cluster-large'
+                ),
+                iconSize: new L.Point(40, 40)
+            });
+        }
+    });
+
+    var sevesoMarkers = L.markerClusterGroup({
+        iconCreateFunction: function(cluster) {
+            return L.divIcon({
+                html: '<div><span>' + cluster.getChildCount() + '</span></div>',
+                className: 'marker-cluster marker-cluster-seveso ' + (
+                    cluster.getChildCount() < 10 ? 'marker-cluster-small' :
+                    cluster.getChildCount() < 100 ? 'marker-cluster-medium' : 'marker-cluster-large'
+                ),
+                iconSize: new L.Point(40, 40)
+            });
+        }
+    });
+    
+    // Groupe de couches pour le buffer fusionné
+    var nuclearBufferLayer = L.layerGroup();
+
+    function extractGeoJSON(text) {
+        var start = text.indexOf('{');
+        var end = text.lastIndexOf('}');
+        if (start !== -1 && end !== -1 && end > start) {
+            try {
+                var jsonString = text.substring(start, end + 1);
+                return JSON.parse(jsonString);
+            } catch (e) { return null; }
+        }
+        return null;
+    }
+
+    var loadingCount = 0;
+    function checkAndFitBounds() {
+        loadingCount++;
+        if (loadingCount === 2) { 
+            var allMarkersLayer = L.featureGroup([nuclearMarkers, sevesoMarkers]);
+            if (allMarkersLayer.getLayers().length > 0) {
+                map.fitBounds(allMarkersLayer.getBounds(), { padding: [50, 50] });
+            }
+        }
+    }
+
+    function loadNuclearData() {
+        $.ajax({
+            url: "NUCLEAIRE_RISQUE.json",
+            dataType: "text", 
+            success: function(textData) {
+                var geojsonData = extractGeoJSON(textData);
+                if (geojsonData && geojsonData.features) {
+                    
+                    // NOUVEAU: Stocker les points pour le géotraitement
+                    var nuclearPoints = turf.featureCollection([]);
+
+                    L.geoJSON(geojsonData, {
+                        pointToLayer: function (feature, latlng) {
+                            // Ajouter le point à la collection Turf
+                            nuclearPoints.features.push(turf.point(feature.geometry.coordinates));
+                            
+                            // Retourner le marqueur
+                            return L.marker(latlng, { icon: nuclearIcon }); 
+                        },
+                        onEachFeature: onEachNuclearFeature
+                    }).eachLayer(function(layer) {
+                        nuclearMarkers.addLayer(layer);
+                    });
+                    
+                    // --- NOUVEAU: Création et fusion des buffers avec Turf.js ---
+                    if (nuclearPoints.features.length > 0) {
+                        // 1. Créer un buffer autour de chaque point (20 km)
+                        var buffers = turf.buffer(nuclearPoints, NUCLEAR_BUFFER_KM, { units: 'kilometers' });
+                        
+                        // 2. Fusionner tous les buffers en une seule MultiPolygon/Polygon
+                        // turf.union est utilisé ici pour fusionner les polygones qui se chevauchent.
+                        // Cependant, si les zones ne se touchent pas, cela peut renvoyer un FeatureCollection.
+                        // Pour garantir une fusion totale, on utilise souvent turf.dissolve (qui est plus simple 
+                        // pour des polygones sans propriétés différentes), mais union est plus robuste ici.
+                        // Pour contourner les limites de turf.union sur plusieurs polygones, nous itérons :
+                        var mergedBuffer = buffers.features[0]; 
+                        for (let i = 1; i < buffers.features.length; i++) {
+                            mergedBuffer = turf.union(mergedBuffer, buffers.features[i]);
+                            // Si turf.union retourne null (polygones ne se touchant pas), nous utilisons le buffer actuel
+                            if (!mergedBuffer) {
+                                mergedBuffer = buffers.features[i];
+                            }
+                        }
+
+                        // 3. Ajouter la géométrie fusionnée à la couche Leaflet
+                        var bufferStyle = {
+                            color: 'red',
+                            weight: 2,
+                            opacity: 0.8,
+                            fillColor: '#ff0000', 
+                            fillOpacity: 0.3 // Légèrement plus opaque pour la fusion
+                        };
+
+                        L.geoJSON(mergedBuffer, { style: bufferStyle }).addTo(nuclearBufferLayer);
+                    }
+                    
+                    map.addLayer(nuclearMarkers);
+                }
+                checkAndFitBounds();
+            },
+            error: function(jqxhr, textStatus, error) {
+                console.error("Erreur de chargement du fichier NUCLEAIRE_RISQUE.json: " + textStatus + ", " + error);
+                checkAndFitBounds(); 
+            }
+        });
+    }
+
+    function loadSevesoData() {
+        $.ajax({
+            url: "SEVESO_RISQUE.json",
+            dataType: "text", 
+            success: function(textData) {
+                var geojsonData = extractGeoJSON(textData);
+                if (geojsonData && geojsonData.features) {
+                    L.geoJSON(geojsonData, {
+                        pointToLayer: function (feature, latlng) {
+                            var iconToUse;
+                            if (feature.properties.lib_seveso && feature.properties.lib_seveso.includes("Seveso seuil haut")) {
+                                iconToUse = sevesoHautIcon;
+                            } else {
+                                iconToUse = sevesoBasIcon;
+                            }
+                            return L.marker(latlng, { icon: iconToUse });
+                        },
+                        onEachFeature: onEachSevesoFeature
+                    }).eachLayer(function(layer) {
+                        sevesoMarkers.addLayer(layer);
+                    });
+                    map.addLayer(sevesoMarkers);
+                }
+                checkAndFitBounds();
+            },
+            error: function(jqxhr, textStatus, error) {
+                console.error("Erreur de chargement du fichier SEVESO_RISQUE.json: " + textStatus + ", " + error);
+                checkAndFitBounds(); 
+            }
+        });
+    }
+    
+    loadNuclearData();
+    loadSevesoData();
+
+
+    /* ---------------------------------------------------- */
+    /* 5. GESTION DE ZOOM ET CONTRÔLES */
+    /* ---------------------------------------------------- */
+    
+    // Gestion de l'affichage du buffer en fonction du niveau de zoom
+    function toggleBufferVisibility() {
+        var currentZoom = map.getZoom();
+        
+        if (currentZoom >= MIN_ZOOM_FOR_BUFFER) {
+            if (!map.hasLayer(nuclearBufferLayer)) {
+                map.addLayer(nuclearBufferLayer);
+            }
+        } else {
+            if (map.hasLayer(nuclearBufferLayer)) {
+                map.removeLayer(nuclearBufferLayer);
+            }
+        }
+    }
+    
+    // Écouteur d'événement de zoom
+    map.on('zoomend', toggleBufferVisibility);
+    // Exécution initiale
+    toggleBufferVisibility(); 
+
+
+    // Gestion du menu des couches
+    var baseMaps = {
+        "Plan Gris": basemapGris,
+        "OpenStreetMap": basemapOsm
+    };
+    
+    var overlayMaps = {
+        "Sites Nucléaires ☢️": nuclearMarkers,
+        "Sites Seveso 🏭": sevesoMarkers,
+        "Zone Tampon Nucléaire (20km)": nuclearBufferLayer
+    };
+
+    L.control.layers(baseMaps, overlayMaps, { collapsed: false, autoZIndex: false }).addTo(map);
+
+    // Légende (Bas Droite)
+    var legend = L.control({ position: 'bottomright' });
+
+    legend.onAdd = function(map) {
+        var div = L.DomUtil.create('div', 'legend');
+        div.innerHTML += '<h4>Légende des Risques</h4>'; 
+
+        var grades = [
+            // Points (Images)
+            { type: 'image', url: 'NUCLEAIRE.png', className: 'nuclear-legend-icon', label: 'Site Nucléaire' }, 
+            { type: 'image', url: 'SENESO_SWG_HAUT-removebg-preview.png', label: 'Seveso Seuil Haut' },
+            { type: 'image', url: 'SENESO_SWG_BAS-removebg-preview.png', label: 'Seveso Seuil Bas' },
+            // Buffers
+            { type: 'buffer', color: 'rgba(255, 0, 0, 0.3)', label: 'Zone Tampon Nucléaire (20km)' }, 
+            // Clusters
+            { type: 'cluster', color: 'rgba(255, 215, 0, 0.8)', label: 'Regroupement Nucléaire' }, 
+            { type: 'cluster', color: 'rgba(138, 43, 226, 0.8)', label: 'Regroupement Seveso' }
+        ];
+
+        for (var i = 0; i < grades.length; i++) {
+            var itemHtml = '<div>';
+            if (grades[i].type === 'image') {
+                var imgClass = grades[i].className ? 'class="' + grades[i].className + '"' : '';
+                itemHtml += '<img src="' + grades[i].url + '" alt="' + grades[i].label + '" ' + imgClass + '> ';
+            } else if (grades[i].type === 'cluster') {
+                itemHtml += '<div class="cluster-box" style="background: ' + grades[i].color + ';"></div> ';
+            } else if (grades[i].type === 'buffer') {
+                itemHtml += '<div class="buffer-box"></div>';
+            }
+            itemHtml += '<span>' + grades[i].label + '</span></div>';
+            div.innerHTML += itemHtml;
+        }
+        return div;
+    };
+
+    legend.addTo(map);
+
+</script>
+
+</body>
+</html>
